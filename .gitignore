@@ -170,3 +170,4 @@ wandb_sweep.yaml
 *.ipynb
 *.hdf5
 *.gz
+**/slurm_out/

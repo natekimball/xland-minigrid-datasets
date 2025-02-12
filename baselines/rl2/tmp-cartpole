@@ -1,0 +1,118 @@
+
+
+# # Hyperparameters
+# gamma = 0.99  # Discount factor
+# clip_epsilon = 0.2  # Clipping for PPO objective
+# lr = 3e-4  # Learning rate
+# batch_size = 4 # 64
+# epochs = 10
+# steps_per_epoch = 2048
+
+# # Environment Setup
+# env = gym.make("CartPole-v1")
+
+# model = CartpoleRL2(
+#     num_actions=env.action_space.n,
+#     embedding_dim=128,
+#     hidden_dim=128,
+#     seq_len=4096,
+#     num_layers=2,
+#     num_heads=2,
+#     # attention_dropout=.2,
+#     # residual_dropout=.2,
+#     # embedding_dropout=.2,
+# )
+
+
+# # Function to collect experiences
+# def collect_experience(env, model, steps):
+#     states, actions, rewards, next_states, dones = [], [], [], [], []
+#     state, _ = env.reset()
+
+#     for _ in range(steps):
+#         state = torch.tensor(state, dtype=torch.float32)
+#         action_probs, _, _ = model(state)
+#         dist = Categorical(action_probs)
+#         action = dist.sample()
+
+#         next_state, reward, done, _, _ = env.step(action.item())
+        
+#         states.append(state)
+#         actions.append(action)
+#         rewards.append(reward)
+#         next_states.append(torch.tensor(next_state, dtype=torch.float32))
+#         dones.append(done)
+
+#         state = next_state
+#         if done:
+#             state = env.reset()
+
+#     return states, actions, rewards, next_states, dones
+
+# # Calculate advantages using GAE (Generalized Advantage Estimation)
+# def compute_advantages(rewards, values, next_values, dones):
+#     advantages = []
+#     gae = 0
+#     for t in reversed(range(len(rewards))):
+#         delta = rewards[t] + gamma * next_values[t] * (1 - dones[t]) - values[t]
+#         gae = delta + gamma * 0.95 * (1 - dones[t]) * gae
+#         advantages.insert(0, gae)
+#     return advantages
+
+# # PPO Update
+# def ppo_update(states, actions, advantages, returns, actor, critic, actor_optimizer, critic_optimizer):
+#     states = torch.stack(states)
+#     actions = torch.stack(actions)
+#     advantages = torch.tensor(advantages, dtype=torch.float32)
+#     returns = torch.tensor(returns, dtype=torch.float32)
+
+#     # Get current value estimates
+#     values = critic(states).squeeze()
+
+#     # Compute actor loss
+#     action_probs = actor(states)
+#     dist = Categorical(action_probs)
+#     log_probs = dist.log_prob(actions)
+#     entropy = dist.entropy().mean()
+
+#     ratio = torch.exp(log_probs - log_probs.detach())
+#     obj = ratio * advantages
+#     clipped_obj = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon) * advantages
+
+#     actor_loss = -torch.min(obj, clipped_obj).mean() - 0.01 * entropy
+
+#     # Compute critic loss
+#     critic_loss = 0.5 * (returns - values).pow(2).mean()
+
+#     # Update actor and critic
+#     actor_optimizer.zero_grad()
+#     actor_loss.backward()
+#     actor_optimizer.step()
+
+#     critic_optimizer.zero_grad()
+#     critic_loss.backward()
+#     critic_optimizer.step()
+
+# # Training Loop
+# def train():
+#     for epoch in range(epochs):
+#         states, actions, rewards, next_states, dones = collect_experience(env, actor, steps_per_epoch)
+        
+#         # Calculate values for states and next states
+#         states_tensor = torch.stack(states)
+#         next_states_tensor = torch.stack(next_states)
+
+#         # values = critic(states_tensor).squeeze()
+#         # next_values = critic(next_states_tensor).squeeze()
+
+#         # Calculate advantages and returns
+#         advantages = compute_advantages(rewards, values.detach().numpy(), next_values.detach().numpy(), dones)
+#         returns = advantages + values.detach().numpy()
+
+#         ppo_update(states, actions, advantages, returns, actor, critic, actor_optimizer, critic_optimizer)
+
+#         print(f"Epoch {epoch + 1}/{epochs} complete")
+
+# # Run training
+# # train()
+# states, actions, rewards, next_states, dones = collect_experience(env, model, steps_per_epoch)

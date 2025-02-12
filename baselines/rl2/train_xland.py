@@ -19,10 +19,10 @@ from torch.utils.data.distributed import DistributedSampler
 from xminigrid.core.constants import NUM_ACTIONS
 from xminigrid.environment import EnvParams
 
-from src.utils.data import XMiniGridADataset
+from src.utils.data import XMiniGridRL2Dataset
 from src.utils.misc import set_seed, Timeit
 # from src.model_tuples_cache import
-from src.xland_ad import XMiniGridAD
+from src.xland_rl2 import XMiniGridRL2
 
 
 @dataclass
@@ -125,7 +125,7 @@ def evaluate_in_context(
 
         # predict next_action
         # [num_envs, seq_len, num_actions] -> [num_envs, num_actions]
-        logits, _ = model(
+        logits, values, _ = model(
             observations=states[:, -step:],
             prev_actions=prev_actions[:, -step:],
             prev_rewards=prev_rewards[:, -step:],
@@ -307,7 +307,7 @@ def train(config: TrainConfig):
     os.environ["OMPI_COMM_WORLD_LOCAL_RANK"] = str(config.local_rank)
     deepspeed.init_distributed()
 
-    dataset = XMiniGridADataset(
+    dataset = XMiniGridRL2Dataset(
         config.learning_histories_path,
         seq_len=config.seq_len,
     )
@@ -345,7 +345,7 @@ def train(config: TrainConfig):
         if (config.zero_stage == 3)
         else nullcontext()
     ):
-        model = XMiniGridAD(
+        model = XMiniGridRL2(
             num_actions=num_actions,
             embedding_dim=config.embedding_dim,
             hidden_dim=config.hidden_dim,
