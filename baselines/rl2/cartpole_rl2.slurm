@@ -10,7 +10,7 @@
 #SBATCH --mem=64G
 #SBATCH --constraint=a4000
 #SBATCH --gres=gpu:1
-#SBATCH --time=0-04:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --partition=gpu
 
 module purge
