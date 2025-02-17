@@ -203,7 +203,7 @@ gamma = 0.99
 lambda_gae = 0.95
 eps_clip = 0.2
 learning_rate = 3e-4
-episodes = 1000
+episodes = 10000
 ppo_epochs = 10
 batch_size = 64
 seq_len = 4096
@@ -289,17 +289,12 @@ def rollout(model, env):
             values.append(value.squeeze(0).detach())
 
     return states, actions, log_probs, values, rewards, dones
+    # return torch.stack(states, device=model.device), torch.stack(actions), torch.stack(log_probs), torch.stack(values), rewards, dones
 
 for episode in range(episodes):
     states, actions, log_probs, values, rewards, dones = rollout(model, env)
     advantages, returns = compute_advantages(rewards, values, dones, gamma, lambda_gae)
 
-    # print(states.device, actions.device, log_probs.device, values.device, rewards.device, dones.device)
-    # print(type(states[0]), type(actions[0]), type(log_probs[0]), type(values[0]), type(rewards[0]), type(dones[0]))
-
-    print(f'{len(states)=}')
-
-    # TODO: fix below
     model.train()
     for _ in range(ppo_epochs):
         for batch_start in range(0, len(states), batch_size):
@@ -347,3 +342,70 @@ for episode in range(episodes):
             optimizer.step()
 
     print(f"Episode {episode}, Reward: {sum(rewards)}")
+
+
+# for episode in range(episodes):
+#     states, actions, log_probs, values, rewards, dones = rollout(model, env)
+#     advantages, returns = compute_advantages(rewards, values, dones, gamma, lambda_gae)
+
+#     model.train()
+#     for _ in range(ppo_epochs):
+#         for batch_start in range(0, len(states), batch_size):
+#             batch_n = min(batch_size, len(states) - batch_start)
+#             batch_slice = slice(batch_start, batch_start + batch_n)
+#             batch_actions = torch.stack(actions[batch_slice])
+#             batch_log_probs = torch.stack(log_probs[batch_slice])
+#             batch_returns = returns[batch_slice].to(device=model.device)
+#             batch_advantages = advantages[batch_slice].to(device=model.device)
+
+#             batch_policies = []
+#             batch_values = []
+
+#             for i in range(batch_start, batch_start + batch_n):
+#                 observations = states[i].unsqueeze(0)
+#                 if i > 0:
+#                     context_observations = torch.stack(states[:i])
+#                     context_actions = torch.stack(actions[:i]).squeeze(-1)
+#                     context_rewards = torch.stack(rewards[:i]).squeeze(-1)
+#                 else:
+#                     context_observations = torch.empty(1, 0, *env.observation_space.shape, device=model.device, dtype=torch.bfloat16)
+#                     context_actions = torch.empty(1, 0, device=model.device, dtype=torch.long)
+#                     context_rewards = torch.empty(1, 0, device=model.device, dtype=torch.bfloat16)
+
+#                 # log_probs = log_probs[i]
+#                 # returns = returns[i].to(device=model.device)
+#                 # advantages = advantages[i].to(device=model.device)
+
+#                 policy, new_values = model(
+#                     observations,
+#                     context_observations,
+#                     context_actions,
+#                     context_rewards
+#                 )
+#                 batch_policies.append(policy)
+#                 batch_values.append(new_values)
+            
+#             batch_policies = torch.stack(batch_policies)
+#             batch_values = torch.stack(batch_values)
+
+#             new_dist = Categorical(batch_policies)
+#             new_log_probs = new_dist.log_prob(batch_actions.long())
+#             ratio = (new_log_probs - batch_log_probs).exp()
+            
+#             surr1 = ratio * batch_advantages
+#             surr2 = torch.clamp(ratio, 1 - eps_clip, 1 + eps_clip) * batch_advantages
+#             policy_loss = -torch.min(surr1, surr2).mean()
+#             value_loss = F.mse_loss(batch_values.squeeze(1), batch_returns)
+#             loss = policy_loss + 0.5 * value_loss
+#             # print(f'{policy_loss=}')
+#             # print(f'{value_loss=}')
+            
+#             optimizer.zero_grad()
+#             loss.backward()
+#             optimizer.step()
+
+#     print(f"Episode {episode}, Reward: {sum(rewards)}")
+
+
+# TODO: Maybe instead of changing the input type, I can put state, action, reward as separate tokens and predict the action token given the state token and all preceding tuples
+# TODO: figure it out why they couldn't reproduce DPT originally
