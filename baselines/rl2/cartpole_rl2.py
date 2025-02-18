@@ -1,3 +1,4 @@
+import os
 import gym
 from typing import Tuple, Optional, Union
 import torch
@@ -8,6 +9,8 @@ from torch.distributions import Categorical
 from torch.nn import functional as F
 import matplotlib.pyplot as plt
 import math
+
+from tqdm import tqdm
 
 from src.model_tuples_cache import Transformer, KVCache
 from src.nn import TransformerBlock, ObservationEncoder
@@ -204,7 +207,7 @@ lambda_gae = 0.95
 eps_clip = 0.2
 learning_rate = 3e-4
 episodes = 10000
-ppo_epochs = 10
+ppo_epochs = 5
 batch_size = 64
 seq_len = 4096
 
@@ -288,124 +291,82 @@ def rollout(model, env):
             )
             values.append(value.squeeze(0).detach())
 
-    return states, actions, log_probs, values, rewards, dones
-    # return torch.stack(states, device=model.device), torch.stack(actions), torch.stack(log_probs), torch.stack(values), rewards, dones
+    return torch.stack(states), torch.stack(actions), torch.stack(log_probs), torch.stack(values), torch.tensor(rewards, dtype=torch.bfloat16), dones
 
-for episode in range(episodes):
+episode_rewards = []
+p_losses = []
+v_losses = []
+
+for episode in tqdm(range(episodes)):
     states, actions, log_probs, values, rewards, dones = rollout(model, env)
     advantages, returns = compute_advantages(rewards, values, dones, gamma, lambda_gae)
 
     model.train()
     for _ in range(ppo_epochs):
         for batch_start in range(0, len(states), batch_size):
-            # print("epoch", _)
-            # print(f'{batch_start=}')
             batch_n = min(batch_size, len(states) - batch_start)
             batch_slice = slice(batch_start, batch_start + batch_n)
-            batch_observations = torch.stack(states[batch_slice])
-            batch_actions = torch.stack(actions[batch_slice])
-            batch_log_probs = torch.stack(log_probs[batch_slice])
+            batch_actions = actions[batch_slice]
+            batch_log_probs = log_probs[batch_slice]
             batch_returns = returns[batch_slice].to(device=model.device)
             batch_advantages = advantages[batch_slice].to(device=model.device)
 
-            # TODO: I cut off some of the context to make all the contexts the same size, maybe try adjusting this with padding
-            # TODO: rather than batching, I could just iterate through the sequence
-            if batch_start > 0:
-                batch_context_observations = torch.stack(states[:batch_start]).repeat(batch_n, 1, 1)
-                batch_context_actions = torch.stack(actions[:batch_start]).repeat(batch_n, 1, 1).squeeze(-1)
-                batch_context_rewards = torch.stack(rewards[:batch_start]).repeat(batch_n, 1, 1).squeeze(-1)
-            else:
-                batch_context_observations = torch.empty(batch_n, 0, *env.observation_space.shape, device=model.device, dtype=torch.bfloat16)
-                batch_context_actions = torch.empty(batch_n, 0, device=model.device, dtype=torch.long)
-                batch_context_rewards = torch.empty(batch_n, 0, device=model.device, dtype=torch.bfloat16)
+            batch_policies = []
+            batch_values = []
 
-            policy, new_values = model(
-                batch_observations,
-                batch_context_observations,
-                batch_context_actions,
-                batch_context_rewards
-            )
-            new_dist = Categorical(policy)
-            new_log_probs = new_dist.log_prob(batch_actions.long())
+            for i in range(batch_start, batch_start + batch_n):
+                query_observation = states[i].unsqueeze(0)
+                context_observations = states[:i].unsqueeze(0)
+                context_actions = actions[:i].reshape(1,-1)
+                context_rewards = rewards[:i].unsqueeze(0).to(device=model.device)
+
+                policy, new_values = model(
+                    query_observation,
+                    context_observations,
+                    context_actions,
+                    context_rewards
+                )
+                batch_policies.append(policy)
+                batch_values.append(new_values.squeeze())
+            
+            batch_policies = torch.stack(batch_policies)
+            batch_values = torch.stack(batch_values)
+
+            new_dist = Categorical(batch_policies)
+            new_log_probs = new_dist.log_prob(batch_actions)
             ratio = (new_log_probs - batch_log_probs).exp()
             
             surr1 = ratio * batch_advantages
             surr2 = torch.clamp(ratio, 1 - eps_clip, 1 + eps_clip) * batch_advantages
             policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = F.mse_loss(new_values.squeeze(1), batch_returns)
-            loss = policy_loss + 0.5 * value_loss
-            # print(f'{policy_loss=}')
-            # print(f'{value_loss=}')
+            value_loss = F.mse_loss(batch_values, batch_returns)
+            loss = policy_loss + 0.1 * value_loss
+            p_losses.append(policy_loss.item())
+            v_losses.append(value_loss.item())
             
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-    print(f"Episode {episode}, Reward: {sum(rewards)}")
+    ep_reward = rewards.sum().item()
+    episode_rewards.append(ep_reward)
+    print(f"Episode {episode}, Reward: {ep_reward}")
 
+os.makedirs("plots", exist_ok=True)
+plt.figure()
+plt.plot(episode_rewards, label="Reward")
+plt.xlabel("Episode")
+plt.ylabel("Reward")
+plt.legend()
+plt.savefig(os.path.join("plots", "cartpole_rl2_rewards.png"))
 
-# for episode in range(episodes):
-#     states, actions, log_probs, values, rewards, dones = rollout(model, env)
-#     advantages, returns = compute_advantages(rewards, values, dones, gamma, lambda_gae)
-
-#     model.train()
-#     for _ in range(ppo_epochs):
-#         for batch_start in range(0, len(states), batch_size):
-#             batch_n = min(batch_size, len(states) - batch_start)
-#             batch_slice = slice(batch_start, batch_start + batch_n)
-#             batch_actions = torch.stack(actions[batch_slice])
-#             batch_log_probs = torch.stack(log_probs[batch_slice])
-#             batch_returns = returns[batch_slice].to(device=model.device)
-#             batch_advantages = advantages[batch_slice].to(device=model.device)
-
-#             batch_policies = []
-#             batch_values = []
-
-#             for i in range(batch_start, batch_start + batch_n):
-#                 observations = states[i].unsqueeze(0)
-#                 if i > 0:
-#                     context_observations = torch.stack(states[:i])
-#                     context_actions = torch.stack(actions[:i]).squeeze(-1)
-#                     context_rewards = torch.stack(rewards[:i]).squeeze(-1)
-#                 else:
-#                     context_observations = torch.empty(1, 0, *env.observation_space.shape, device=model.device, dtype=torch.bfloat16)
-#                     context_actions = torch.empty(1, 0, device=model.device, dtype=torch.long)
-#                     context_rewards = torch.empty(1, 0, device=model.device, dtype=torch.bfloat16)
-
-#                 # log_probs = log_probs[i]
-#                 # returns = returns[i].to(device=model.device)
-#                 # advantages = advantages[i].to(device=model.device)
-
-#                 policy, new_values = model(
-#                     observations,
-#                     context_observations,
-#                     context_actions,
-#                     context_rewards
-#                 )
-#                 batch_policies.append(policy)
-#                 batch_values.append(new_values)
-            
-#             batch_policies = torch.stack(batch_policies)
-#             batch_values = torch.stack(batch_values)
-
-#             new_dist = Categorical(batch_policies)
-#             new_log_probs = new_dist.log_prob(batch_actions.long())
-#             ratio = (new_log_probs - batch_log_probs).exp()
-            
-#             surr1 = ratio * batch_advantages
-#             surr2 = torch.clamp(ratio, 1 - eps_clip, 1 + eps_clip) * batch_advantages
-#             policy_loss = -torch.min(surr1, surr2).mean()
-#             value_loss = F.mse_loss(batch_values.squeeze(1), batch_returns)
-#             loss = policy_loss + 0.5 * value_loss
-#             # print(f'{policy_loss=}')
-#             # print(f'{value_loss=}')
-            
-#             optimizer.zero_grad()
-#             loss.backward()
-#             optimizer.step()
-
-#     print(f"Episode {episode}, Reward: {sum(rewards)}")
-
+plt.figure()
+plt.plot(p_losses, label="Policy Loss")
+plt.plot(v_losses, label="Value Loss")
+plt.xlabel("Batch")
+plt.ylabel("Loss")
+plt.legend()
+plt.savefig(os.path.join("plots", "cartpole_rl2_losses.png"))
 
 # TODO: Maybe instead of changing the input type, I can put state, action, reward as separate tokens and predict the action token given the state token and all preceding tuples
 # TODO: figure it out why they couldn't reproduce DPT originally
