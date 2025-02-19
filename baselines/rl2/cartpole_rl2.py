@@ -88,15 +88,25 @@ class CartpoleRL2(nn.Module):
                 for _ in range(num_layers)
             ]
         )
-        self.transformer = nn.Transformer(
-            d_model=hidden_dim,
-            nhead=2,
-            num_encoder_layers=2,
-            num_decoder_layers=2,
-            dim_feedforward=hidden_dim,
-            batch_first=True
-        )
         
+        self.action_layer = TransformerBlock(
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            attention_dropout=attention_dropout,
+            residual_dropout=residual_dropout,
+            normalize_qk=normalize_qk,
+            pre_norm=pre_norm,
+        )
+
+        self.value_layer = TransformerBlock(
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            attention_dropout=attention_dropout,
+            residual_dropout=residual_dropout,
+            normalize_qk=normalize_qk,
+            pre_norm=pre_norm,
+        )
+
         self.action_head = nn.Linear(hidden_dim, num_actions)
         self.value_head = nn.Linear(hidden_dim, 1)
 
@@ -189,18 +199,26 @@ class CartpoleRL2(nn.Module):
         # print(sequence.shape)
         # out = self.transformer(sequence, sequence)
         # print(out.shape)
-        
-        last_out = out[:, -1, :]
-        # print(f'{last_out=}')
 
-        # [batch_size, seq_len + 1, num_actions]
-        logits = self.action_head(last_out)
+        value_out = self.value_layer(out)
+        values = self.value_head(value_out[:, -1, :])
+
+        action_out = self.action_layer(out)
+        logits = self.action_head(action_out[:, -1, :])
         policy = F.softmax(logits, dim=-1)
-
-        # [batch_size, seq_len + 1, 1]
-        values = self.value_head(last_out)
-
+        
         return policy, values
+        
+        # last_out = out[:, -1, :]
+
+        # # [batch_size, num_actions]
+        # logits = self.action_head(last_out)
+        # policy = F.softmax(logits, dim=-1)
+
+        # # [batch_size, 1]
+        # values = self.value_head(last_out)
+
+        # return policy, values
 
 gamma = 0.99
 lambda_gae = 0.95
@@ -293,6 +311,24 @@ def rollout(model, env):
 
     return torch.stack(states), torch.stack(actions), torch.stack(log_probs), torch.stack(values), torch.tensor(rewards, dtype=torch.bfloat16), dones
 
+def plot_rewards_losses(episode_rewards, p_losses, v_losses):
+    os.makedirs("plots", exist_ok=True)
+    plt.figure()
+    plt.plot(episode_rewards, label="Reward")
+    plt.xlabel("Episode")
+    plt.ylabel("Reward")
+    plt.legend()
+    plt.savefig(os.path.join("plots", "cartpole_rl2_rewards.png"))
+
+    plt.figure()
+    plt.plot(p_losses, label="Policy Loss")
+    plt.plot(v_losses, label="Value Loss")
+    plt.xlabel("Batch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig(os.path.join("plots", "cartpole_rl2_losses.png"))
+
+
 episode_rewards = []
 p_losses = []
 v_losses = []
@@ -319,7 +355,6 @@ for episode in tqdm(range(episodes)):
                 context_observations = states[:i].unsqueeze(0)
                 context_actions = actions[:i].reshape(1,-1)
                 context_rewards = rewards[:i].unsqueeze(0).to(device=model.device)
-
                 policy, new_values = model(
                     query_observation,
                     context_observations,
@@ -340,7 +375,7 @@ for episode in tqdm(range(episodes)):
             surr2 = torch.clamp(ratio, 1 - eps_clip, 1 + eps_clip) * batch_advantages
             policy_loss = -torch.min(surr1, surr2).mean()
             value_loss = F.mse_loss(batch_values, batch_returns)
-            loss = policy_loss + 0.1 * value_loss
+            loss = policy_loss + 0.5 * value_loss
             p_losses.append(policy_loss.item())
             v_losses.append(value_loss.item())
             
@@ -351,22 +386,8 @@ for episode in tqdm(range(episodes)):
     ep_reward = rewards.sum().item()
     episode_rewards.append(ep_reward)
     print(f"Episode {episode}, Reward: {ep_reward}")
-
-os.makedirs("plots", exist_ok=True)
-plt.figure()
-plt.plot(episode_rewards, label="Reward")
-plt.xlabel("Episode")
-plt.ylabel("Reward")
-plt.legend()
-plt.savefig(os.path.join("plots", "cartpole_rl2_rewards.png"))
-
-plt.figure()
-plt.plot(p_losses, label="Policy Loss")
-plt.plot(v_losses, label="Value Loss")
-plt.xlabel("Batch")
-plt.ylabel("Loss")
-plt.legend()
-plt.savefig(os.path.join("plots", "cartpole_rl2_losses.png"))
+    if episode % 100 == 0:
+        plot_rewards_losses(episode_rewards, p_losses, v_losses)
 
 # TODO: Maybe instead of changing the input type, I can put state, action, reward as separate tokens and predict the action token given the state token and all preceding tuples
 # TODO: figure it out why they couldn't reproduce DPT originally
