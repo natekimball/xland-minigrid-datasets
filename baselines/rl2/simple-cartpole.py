@@ -54,12 +54,12 @@ policy_optimizer = optim.Adam(actor.parameters(), lr=learning_rate)
 value_optimizer = optim.Adam(critic.parameters(), lr=learning_rate)
 
 
-def compute_advantages(rewards, values, dones, gamma=0.99, lam=0.95):
+def compute_advantages(rewards, values, terminateds, gamma=0.99, lam=0.95):
     advantages = []
     gae = 0
     for t in reversed(range(len(rewards))):
-        delta = rewards[t] + gamma * values[t + 1] * (1 - dones[t]) - values[t]
-        gae = delta + gamma * lam * (1 - dones[t]) * gae
+        delta = rewards[t] + gamma * values[t + 1] * (1 - terminateds[t]) - values[t]
+        gae = delta + gamma * lam * (1 - terminateds[t]) * gae
         advantages.insert(0, gae)
     returns = [adv + val for adv, val in zip(advantages, values[:-1])]
     return torch.tensor(advantages, dtype=torch.float32), torch.tensor(returns, dtype=torch.float32)
@@ -71,7 +71,7 @@ def rollout(actor, critic, env):
     log_probs = []
     values = []
     rewards = []
-    dones = []
+    terminateds = []
     states = []
     actions = []
 
@@ -88,20 +88,19 @@ def rollout(actor, critic, env):
             dist = Categorical(policy)
             action = dist.sample()
             next_state, reward, terminated, truncated, info = env.step(action.item())
-            done = terminated or truncated
 
             states.append(state)
             log_probs.append(dist.log_prob(action).detach())
             values.append(value.squeeze(0).detach())
             rewards.append(reward)
-            dones.append(done)
+            terminateds.append(terminated)
             actions.append(action)
             
             state = next_state
-            if done:
+            if terminated or truncated:
                 break
         
-        if done:
+        if terminated:
             values.append(torch.tensor([0.0], dtype=torch.float32))
         else:
             value = critic(
@@ -109,9 +108,9 @@ def rollout(actor, critic, env):
             )
             values.append(value.squeeze(0).detach())
 
-    return torch.stack(states), torch.stack(actions), torch.stack(log_probs), torch.stack(values), torch.tensor(rewards, dtype=torch.float32), dones
+    return torch.stack(states), torch.stack(actions), torch.stack(log_probs), torch.stack(values), torch.tensor(rewards, dtype=torch.float32), terminateds
 
-def plot_rewards_losses(episode_rewards, p_losses, v_losses, advantages, policy_grads, value_grads):
+def plot_results(episode_rewards, p_losses, v_losses, advantages, policy_grads, value_grads):
     os.makedirs("plots", exist_ok=True)
     plt.figure()
     plt.plot(episode_rewards, label="Reward")
@@ -170,8 +169,8 @@ mean_advantages = []
 
 # for episode in tqdm(range(episodes)):
 for episode in range(episodes):
-    states, actions, log_probs, values, rewards, dones = rollout(actor, critic, env)
-    advantages, returns = compute_advantages(rewards, values, dones, gamma, lambda_gae)
+    states, actions, log_probs, values, rewards, terminateds = rollout(actor, critic, env)
+    advantages, returns = compute_advantages(rewards, values, terminateds, gamma, lambda_gae)
 
     actor.train()
     critic.train()
@@ -183,20 +182,12 @@ for episode in range(episodes):
             batch_log_probs = log_probs[batch_slice]
             batch_returns = returns[batch_slice]
             batch_advantages = advantages[batch_slice]
+            batch_observations = states[batch_slice]
 
             mean_advantages.append(batch_advantages.mean().item())
             # Normalize advantages
             batch_advantages = batch_advantages - batch_advantages.mean()
             batch_advantages = batch_advantages / (batch_advantages.std() + 1e-8)
-
-            # for i in range(batch_start, batch_start + batch_n):
-            #     query_observation = states[i].unsqueeze(0)
-                
-            #     policy = model(
-            #         query_observation
-            #     )
-            #     batch_policies.append(policy)
-            batch_observations = states[batch_slice]
             
             batch_policies = actor(
                 batch_observations
@@ -214,6 +205,7 @@ for episode in range(episodes):
             # print(f'{batch_returns=}')
             
             surr1 = ratio * batch_advantages
+            # surr2 = (1 + torch.sign(batch_advantages) * eps_clip) * batch_advantages
             surr2 = torch.clamp(ratio, 1 - eps_clip, 1 + eps_clip) * batch_advantages
             policy_loss = -torch.min(surr1, surr2).mean()
             # print(surr1)
@@ -221,6 +213,7 @@ for episode in range(episodes):
 
             policy_optimizer.zero_grad()
             policy_loss.backward()
+
             # Log policy gradient norms
             pg_norms = [p.grad.data.norm(2).item() for p in actor.parameters() if p.grad is not None]
             mean_policy_gradients.append(sum(pg_norms)/len(pg_norms) if pg_norms else 0.0)
@@ -232,6 +225,7 @@ for episode in range(episodes):
             
             value_optimizer.zero_grad()
             value_loss.backward()
+
             # Log value gradient norms
             vg_norms = [p.grad.data.norm(2).item() for p in critic.parameters() if p.grad is not None]
             mean_value_gradients.append(sum(vg_norms)/len(vg_norms) if vg_norms else 0.0)
@@ -242,7 +236,7 @@ for episode in range(episodes):
     episode_rewards.append(ep_reward)
     print(f"Episode {episode}, Reward: {ep_reward}")
     if episode % 100 == 99:
-        plot_rewards_losses(episode_rewards, p_losses, v_losses, mean_advantages, mean_policy_gradients, mean_value_gradients)
+        plot_results(episode_rewards, p_losses, v_losses, mean_advantages, mean_policy_gradients, mean_value_gradients)
 
 
 # class CartpolePolicy(nn.Module):
